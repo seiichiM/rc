@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub Repo Cleaner</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f4f4f9; }
+        .container { max-width: 600px; margin: 0 auto; background: #fff; padding: 20px; border-radius: 8px; }
+        input[type="password"] { width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        button { padding: 10px 20px; border-radius: 4px; border: none; cursor: pointer; font-weight: bold; }
+        .btn-blue { background: #0366d6; color: white; width: 100%; }
+        .btn-red { background: #d73a49; color: white; margin-top: 10px; display: none; width: 100%; }
+        #repoList { margin-top: 20px; border-top: 1px solid #eee; max-height: 400px; overflow-y: auto; }
+        .repo-item { padding: 10px; border-bottom: 1px solid #eee; display: flex; align-items: center; }
+        .repo-item:hover { background: #f9f9f9; }
+        .repo-item input { margin-right: 10px; transform: scale(1.2); }
+        .repo-name { flex: 1; font-weight: bold; }
+        .repo-meta { font-size: 0.8rem; color: #666; margin-left: 10px; }
+        .error { color: red; margin-top: 10px; }
+        .success { color: green; margin-top: 10px; }
+        .note { font-size: 0.85rem; color: #666; margin-bottom: 15px; }
+        .note a { color: #0366d6; }
+    </style>
+
+    <!-- PWA Settings -->
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/png" href="icon-192.png">
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('service-worker.js');
+        }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h2>GitHub Repo Cleaner</h2>
+        <p class="note">リポジトリを削除するツールです。削除には <b>delete_repo</b> 権限を持つトークンが必要です。</p>
+        
+        <label>GitHub Token:</label>
+        <input type="password" id="token" placeholder="ghp_xxxxxxxxxxxx">
+        <div class="note">
+            <a href="https://github.com/settings/tokens/new?scopes=repo,delete_repo&description=RepoCleaner" target="_blank">削除権限付きトークンを作成</a>
+        </div>
+        
+        <button class="btn-blue" id="btnList">リポジトリ一覧を取得</button>
+        
+        <div id="repoList"></div>
+        
+        <button class="btn-red" id="btnDelete">選択したリポジトリを削除</button>
+        
+        <div id="msg"></div>
+    </div>
+
+    <script>
+        const btnList = document.getElementById('btnList');
+        const btnDelete = document.getElementById('btnDelete');
+        const repoList = document.getElementById('repoList');
+        const msg = document.getElementById('msg');
+        let currentRepos = [];
+
+        async function api(endpoint, method = 'GET', body = null) {
+            const token = document.getElementById('token').value.trim();
+            if (!token) throw new Error("トークンを入力してください");
+            
+            const options = {
+                method,
+                headers: {
+                    'Authorization': `token ${token}`,
+                    'Accept': 'application/vnd.github.v3+json'
+                }
+            };
+            if (body) {
+                options.headers['Content-Type'] = 'application/json';
+                options.body = JSON.stringify(body);
+            }
+
+            const res = await fetch(`https://api.github.com${endpoint}`, options);
+            if (res.status === 204) return true; // No Content (Delete Success)
+            if (!res.ok) {
+                const err = await res.json().catch(()=>({}));
+                throw new Error(err.message || res.statusText);
+            }
+            return await res.json();
+        }
+
+        btnList.onclick = async () => {
+            msg.textContent = "取得中...";
+            msg.className = "";
+            repoList.innerHTML = "";
+            btnDelete.style.display = "none";
+            
+            try {
+                // 100件まで取得 (必要ならページネーション対応するが、まずは簡易的に)
+                const repos = await api('/user/repos?sort=updated&per_page=100&type=owner');
+                currentRepos = repos;
+                
+                if (repos.length === 0) {
+                    msg.textContent = "リポジトリが見つかりませんでした。";
+                    return;
+                }
+
+                repos.forEach(repo => {
+                    const div = document.createElement('div');
+                    div.className = 'repo-item';
+                    div.innerHTML = `
+                        <input type="checkbox" value="${repo.name}">
+                        <div class="repo-name">${repo.name}</div>
+                        <div class="repo-meta">${repo.private ? 'Private' : 'Public'} | ⭐ ${repo.stargazers_count}</div>
+                    `;
+                    repoList.appendChild(div);
+                });
+                
+                btnDelete.style.display = "block";
+                msg.textContent = `${repos.length} 件のリポジトリを取得しました。`;
+                msg.className = "success";
+            } catch (e) {
+                msg.textContent = `エラー: ${e.message}`;
+                msg.className = "error";
+            }
+        };
+
+        btnDelete.onclick = async () => {
+            const checks = document.querySelectorAll('#repoList input:checked');
+            if (checks.length === 0) return alert("削除するリポジトリを選択してください");
+
+            const repoNames = Array.from(checks).map(c => c.value);
+            const confirmMsg = `以下の ${repoNames.length} 件のリポジトリを本当に削除しますか？\n\n${repoNames.join('\n')}\n\nこの操作は取り消せません！`;
+            
+            if (!confirm(confirmMsg)) return;
+            
+            // ダブルチェック
+            const username = (await api('/user')).login;
+            if (!prompt(`確認のため、あなたのユーザー名 "${username}" を入力してください。`) === username) {
+                return alert("ユーザー名が一致しません。削除をキャンセルしました。");
+            }
+
+            msg.textContent = "削除中...";
+            let deletedCount = 0;
+            let errors = [];
+
+            for (const name of repoNames) {
+                try {
+                    await api(`/repos/${username}/${name}`, 'DELETE');
+                    deletedCount++;
+                    // 画面から削除
+                    checks.forEach(c => {
+                        if (c.value === name) c.parentElement.remove();
+                    });
+                } catch (e) {
+                    errors.push(`${name}: ${e.message}`);
+                }
+            }
+
+            if (errors.length > 0) {
+                msg.textContent = `完了: ${deletedCount}件削除。エラー: ${errors.length}件\n${errors.join('\n')}`;
+                msg.className = "error";
+            } else {
+                msg.textContent = `選択された ${deletedCount} 件のリポジトリをすべて削除しました。`;
+                msg.className = "success";
+                
+                // トークン削除の案内を追加
+                const deleteTokenLink = document.createElement('div');
+                deleteTokenLink.style.marginTop = "10px";
+                deleteTokenLink.innerHTML = `<a href="https://github.com/settings/tokens" target="_blank" style="color:#d73a49">作業完了：トークン管理ページでトークンを削除する</a>`;
+                msg.appendChild(deleteTokenLink);
+            }
+        };
+    </script>
+</body>
+</html>
